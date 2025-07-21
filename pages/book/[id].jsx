@@ -1,148 +1,188 @@
+// pages/book/[id].jsx
 import Head from 'next/head'
-import { useRouter } from "next/router"
+import { useRouter } from 'next/router'
 import Link from 'next/link'
 import { useEffect } from 'react'
-import { withIronSessionSsr } from "iron-session/next";
-import sessionOptions from "../../config/session";
-import { useBookContext } from "../../context/book"
+import { withIronSessionSsr } from 'iron-session/next'
+import sessionOptions from '../../config/session'
+import { useBookContext } from '../../context/book'
 import Header from '../../components/header'
 import db from '../../db'
 import styles from '../../styles/Book.module.css'
 
 export const getServerSideProps = withIronSessionSsr(
-  async function getServerSideProps({ req, params }) {
-    const { user } = req.session;
-    const props = {};
+  async function getServerSideProps({ req, res, params }) {
+    const { user } = req.session || {}
+    // Always tell the client whether we're logged in
+    const props = { isLoggedIn: !!user }
     if (user) {
-      props.user = req.session.user;
-      const book = await db.book.getByGoogleId(req.session.user.id, params.id)
-      if (book)
-        props.book = book
+      props.user = user
+      // If it's already in the user's favorites, return that record
+      const favorite = await db.book.getByGoogleId(user.id, params.id)
+      if (favorite) {
+        props.book = favorite
+      }
     }
-    props.isLoggedIn = !!user;
-    return { props };
+    return { props }
   },
   sessionOptions
-);
+)
 
-export default function Book(props) {
+export default function Book({ book: favoriteBook, isLoggedIn }) {
   const router = useRouter()
   const bookId = router.query.id
-  const { isLoggedIn } = props
-  const [{bookSearchResults}] = useBookContext()
+  const [{ bookSearchResults }] = useBookContext()
 
-  let isFavoriteBook = false
-  let book
-  if (props.book) {
-    book = props.book
-    isFavoriteBook = true
-  } else
-    book = bookSearchResults.find(book => book.googleId === bookId)
+  // Determine which "book" to render and whether it's a favorite
+  const isFavoriteBook = !!favoriteBook
+  const book = favoriteBook
+    ? favoriteBook
+    : bookSearchResults.find((b) => b.googleId === bookId)
 
-  // No book from search/context or getServerSideProps/favorites, redirect to Homepage
+  // If there's literally no book to show, send them home
   useEffect(() => {
-    if (!props.book && !book)
+    if (!favoriteBook && !book) {
       router.push('/')
-  }, [props.book, bookSearchResults, book, router])
+    }
+  }, [favoriteBook, book, router])
 
+  // Add the current book (from context) to favorites
   async function addToFavorites() {
-    // TODO: use fetch to call POST /api/book
-    // Be sure to pass book in body (use JSON.stringify)
-    // Be sure to also include the content-type header as application/json
-    // Call router.replace(router.asPath) if you receive a 200 status
+    const res = await fetch('/api/book', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(book),
+    })
+    if (res.ok) {
+      router.replace(router.asPath)
+    }
   }
+
+  // Remove the current favorite (props.book) by its database _id
   async function removeFromFavorites() {
-    // TODO: use fetch to call DELETE /api/book
-    // Be sure to pass {id: <book id>} in body (use JSON.stringify)
-    // Be sure to also include the content-type header as application/json
-    // Call router.replace(router.asPath) if you receive a 200 status
+    const res = await fetch('/api/book', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: favoriteBook.id }),
+    })
+    if (res.ok) {
+      router.replace(router.asPath)
+    }
   }
 
   return (
     <>
       <Head>
-        <title>Booker Book</title>
-        <meta name="description" content="Viewing a book on booker" />
-        <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📚</text></svg>" />
-        {/* <link rel="icon" href="/favicon.ico" /> */}
+        <title>{book?.title} | Booker</title>
+        <meta name="description" content={`Viewing ${book?.title}`} />
+        <link rel="icon" href="/favicon.ico" />
       </Head>
+
       <Header isLoggedIn={isLoggedIn} />
-      {
-        book &&
+
+      {book && (
         <main>
-          <BookInfo isFavorite={isFavoriteBook} {...book}/>
+          <BookInfo isFavorite={isFavoriteBook} {...book} />
+
           <div className={styles.controls}>
-            {
-              !isLoggedIn
-              ? <>
-                  <p>Want to add this book to your favorites?</p>
-                  <Link href="/login" className="button">Login</Link>
-                </>
-              : isFavoriteBook
-              ? <button onClick={removeFromFavorites}>
-                  Remove from Favorites
-                </button>
-              : <button onClick={addToFavorites}>
-                  Add to Favorites
-                </button>
-            }
+            {!isLoggedIn ? (
+              <>
+                <p>Want to add this book to your favorites?</p>
+                <Link href="/login">
+                  <a className="button">Login</a>
+                </Link>
+              </>
+            ) : isFavoriteBook ? (
+              <button onClick={removeFromFavorites}>
+                Remove from Favorites
+              </button>
+            ) : (
+              <button onClick={addToFavorites}>
+                Add to Favorites
+              </button>
+            )}
 
             <a href="#" onClick={() => router.back()}>
               Return
             </a>
           </div>
         </main>
-      }
+      )}
     </>
   )
 }
 
 function BookInfo({
   title,
-  authors,
+  authors = [],
   thumbnail,
-  description,
+  description = '',
+  pageCount = 0,
+  categories = [],
+  previewLink = '',
   isFavorite,
-  pageCount,
-  categories,
-  previewLink
 }) {
   return (
     <>
       <div className={styles.titleGroup}>
         <div>
-          <h1>{title}{isFavorite && <sup>⭐</sup>}</h1>
-          {
-            authors && authors.length > 0 &&
-            <h2>By: {authors.join(", ").replace(/, ([^,]*)$/, ', and $1')}</h2>
-          }
-          {
-            categories && categories.length > 0 &&
-            <h3>Category: {categories.join(", ").replace(/, ([^,]*)$/, ', and $1')}</h3>
-          }
+          <h1>
+            {title}
+            {isFavorite && <sup>⭐</sup>}
+          </h1>
+          {authors.length > 0 && (
+            <h2>
+              By: {authors.join(', ').replace(/, ([^,]*)$/, ', and $1')}
+            </h2>
+          )}
+          {categories.length > 0 && (
+            <h3>
+              Category:{' '}
+              {categories.join(', ').replace(/, ([^,]*)$/, ', and $1')}
+            </h3>
+          )}
         </div>
-        <a target="_BLANK"
+        <a
+          target="_blank"
+          rel="noreferrer"
           href={previewLink}
           className={styles.imgContainer}
-          rel="noreferrer">
-          <img src={thumbnail
-            ? thumbnail
-            : "https://via.placeholder.com/128x190?text=NO COVER"} alt={title} />
+        >
+          <img
+            src={
+              thumbnail
+                ? thumbnail
+                : 'https://via.placeholder.com/128x190?text=NO COVER'
+            }
+            alt={title}
+          />
           <span>Look Inside!</span>
         </a>
       </div>
-      <p>Description:<br/>{description}</p>
+      <p>
+        Description:
+        <br />
+        {description}
+      </p>
       <p>Pages: {pageCount}</p>
       <div className={styles.links}>
         <span>Order online:</span>
-        <a target="_BLANK"
-          href={`https://www.amazon.com/s?k=${title} ${authors ? authors[0] : ""}`}
-          rel="noreferrer">
+        <a
+          target="_blank"
+          rel="noreferrer"
+          href={`https://www.amazon.com/s?k=${encodeURIComponent(
+            title + ' ' + (authors[0] || '')
+          )}`}
+        >
           Amazon
         </a>
-        <a target="_BLANK"
-          href={`https://www.barnesandnoble.com/s/${title} ${authors ? authors[0] : ""}`}
-          rel="noreferrer">
+        <a
+          target="_blank"
+          rel="noreferrer"
+          href={`https://www.barnesandnoble.com/s/${encodeURIComponent(
+            title + ' ' + (authors[0] || '')
+          )}`}
+        >
           Barnes & Noble
         </a>
       </div>
